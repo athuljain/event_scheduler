@@ -1,32 +1,29 @@
-const pool = require("../config/db");
+
+const prisma = require("../config/db");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
-// Admin Login
+// ADMIN LOGIN
 const loginAdmin = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // Validate input
     if (!email || !password) {
       return res.status(400).json({
         message: "Email and password are required",
       });
     }
 
-    // Find admin by email
-    const result = await pool.query(
-      "SELECT * FROM admins WHERE email = $1",
-      [email]
-    );
+    // Find admin using Prisma
+    const admin = await prisma.admin.findUnique({
+      where: { email },
+    });
 
-    if (result.rows.length === 0) {
+    if (!admin) {
       return res.status(401).json({
         message: "Invalid email or password",
       });
     }
-
-    const admin = result.rows[0];
 
     // Compare password
     const isMatch = await bcrypt.compare(
@@ -40,19 +37,17 @@ const loginAdmin = async (req, res) => {
       });
     }
 
-    // Generate JWT token
+    // Generate JWT
     const token = jwt.sign(
       {
         id: admin.id,
         email: admin.email,
       },
       process.env.JWT_SECRET,
-      {
-        expiresIn: "1d",
-      }
+      { expiresIn: "1d" }
     );
 
-    res.status(200).json({
+    return res.status(200).json({
       message: "Login successful",
       token,
       admin: {
@@ -64,23 +59,17 @@ const loginAdmin = async (req, res) => {
   } catch (error) {
     console.error("Login Error:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       message: "Server error",
     });
   }
 };
 
-// Get logged-in admin
+// GET LOGGED-IN ADMIN
 const getMe = async (req, res) => {
-  try {
-    res.status(200).json({
-      admin: req.admin,
-    });
-  } catch (error) {
-    res.status(500).json({
-      message: "Server error",
-    });
-  }
+  return res.status(200).json({
+    admin: req.admin,
+  });
 };
 
 module.exports = {

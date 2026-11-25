@@ -1,4 +1,45 @@
-const pool = require("../config/db");
+
+const prisma = require("../config/db");
+
+// Convert Prisma Date to YYYY-MM-DD
+const formatDate = (date) => {
+  return date.toISOString().slice(0, 10);
+};
+
+// Convert Prisma Time to HH:mm:ss
+const formatTime = (time) => {
+  return time.toISOString().slice(11, 19);
+};
+
+// Format event before sending JSON response
+const formatEvent = (event) => ({
+  ...event,
+  event_date: formatDate(event.eventDate),
+  start_time: formatTime(event.startTime),
+  end_time: formatTime(event.endTime),
+  image: event.image,
+  description: event.description,
+  venue: event.venue,
+  mode: event.mode,
+});
+
+// Convert incoming strings to Prisma Date values
+const toDate = (date) =>
+  new Date(`${date}T00:00:00.000Z`);
+
+const toTime = (time) =>
+  new Date(`1970-01-01T${time}Z`);
+
+const isOverlapError = (error) => {
+  const errorMessage = String(error.message || "");
+
+  return (
+    error.code === "23P01" ||
+    error.code === "P2004" ||
+    errorMessage.includes("23P01") ||
+    errorMessage.includes("prevent_event_overlap")
+  );
+};
 
 // CREATE EVENT
 const createEvent = async (req, res) => {
@@ -13,7 +54,6 @@ const createEvent = async (req, res) => {
       mode,
     } = req.body;
 
-    // Validate required fields
     if (!title || !event_date || !start_time || !end_time) {
       return res.status(400).json({
         message: "Title, date, start time and end time are required",
@@ -40,41 +80,28 @@ const createEvent = async (req, res) => {
 
     const image = `/uploads/${req.file.filename}`;
 
-    const result = await pool.query(
-      `INSERT INTO events
-      (
+    const event = await prisma.event.create({
+      data: {
         title,
-        event_date,
-        start_time,
-        end_time,
+        eventDate: toDate(event_date),
+        startTime: toTime(start_time),
+        endTime: toTime(end_time),
         image,
-        description,
-        venue,
-        mode
-      )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-      RETURNING *`,
-      [
-        title,
-        event_date,
-        start_time,
-        end_time,
-        image,
-        description || null,
-        venue || null,
-        mode || "offline",
-      ]
-    );
+        description: description || null,
+        venue: venue || null,
+        mode: mode || "offline",
+      },
+    });
 
     res.status(201).json({
       message: "Event created successfully",
-      event: result.rows[0],
+      event: formatEvent(event),
     });
 
   } catch (error) {
     console.error("Create Event Error:", error);
 
-    if (error.code === "23P01") {
+    if (isOverlapError(error)) {
       return res.status(409).json({
         message: "Another event already exists in this time slot",
       });
@@ -85,7 +112,6 @@ const createEvent = async (req, res) => {
     });
   }
 };
-
 
 // GET ALL EVENTS + DATE FILTER
 const getEvents = async (req, res) => {
@@ -98,26 +124,31 @@ const getEvents = async (req, res) => {
       });
     }
 
-    let query = "SELECT * FROM events WHERE 1=1";
-    const values = [];
+    const where = {};
 
-    if (startDate) {
-      values.push(startDate);
-      query += ` AND event_date >= $${values.length}`;
+    if (startDate || endDate) {
+      where.eventDate = {};
+
+      if (startDate) {
+        where.eventDate.gte = toDate(startDate);
+      }
+
+      if (endDate) {
+        where.eventDate.lte = toDate(endDate);
+      }
     }
 
-    if (endDate) {
-      values.push(endDate);
-      query += ` AND event_date <= $${values.length}`;
-    }
-
-    query += " ORDER BY event_date ASC, start_time ASC";
-
-    const result = await pool.query(query, values);
+    const events = await prisma.event.findMany({
+      where,
+      orderBy: [
+        { eventDate: "asc" },
+        { startTime: "asc" },
+      ],
+    });
 
     res.status(200).json({
-      count: result.rows.length,
-      events: result.rows,
+      count: events.length,
+      events: events.map(formatEvent),
     });
 
   } catch (error) {
@@ -129,31 +160,29 @@ const getEvents = async (req, res) => {
   }
 };
 
-
 // GET SINGLE EVENT
 const getEventById = async (req, res) => {
   try {
-    const { id } = req.params;
+    const id = Number(req.params.id);
 
-    if (!/^\d+$/.test(id)) {
+    if (!Number.isInteger(id) || id <= 0) {
       return res.status(400).json({
         message: "Invalid event ID",
       });
     }
 
-    const result = await pool.query(
-      "SELECT * FROM events WHERE id = $1",
-      [id]
-    );
+    const event = await prisma.event.findUnique({
+      where: { id },
+    });
 
-    if (result.rows.length === 0) {
+    if (!event) {
       return res.status(404).json({
         message: "Event not found",
       });
     }
 
     res.status(200).json({
-      event: result.rows[0],
+      event: formatEvent(event),
     });
 
   } catch (error) {
@@ -165,11 +194,26 @@ const getEventById = async (req, res) => {
   }
 };
 
-
 // UPDATE EVENT
 const updateEvent = async (req, res) => {
   try {
-    const { id } = req.params;
+    const id = Number(req.params.id);
+
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({
+        message: "Invalid event ID",
+      });
+    }
+
+    const oldEvent = await prisma.event.findUnique({
+      where: { id },
+    });
+
+    if (!oldEvent) {
+      return res.status(404).json({
+        message: "Event not found",
+      });
+    }
 
     const {
       title,
@@ -181,48 +225,31 @@ const updateEvent = async (req, res) => {
       mode,
     } = req.body;
 
-    if (!/^\d+$/.test(id)) {
-      return res.status(400).json({
-        message: "Invalid event ID",
-      });
-    }
-
-    const existing = await pool.query(
-      "SELECT * FROM events WHERE id = $1",
-      [id]
-    );
-
-    if (existing.rows.length === 0) {
-      return res.status(404).json({
-        message: "Event not found",
-      });
-    }
-
-    const oldEvent = existing.rows[0];
-
-    // Keep old image if a new one is not uploaded
-    const image = req.file
-      ? `/uploads/${req.file.filename}`
-      : oldEvent.image;
-
     const updatedTitle = title ?? oldEvent.title;
-    const updatedDate = event_date ?? oldEvent.event_date;
-    const updatedStart = start_time ?? oldEvent.start_time;
-    const updatedEnd = end_time ?? oldEvent.end_time;
+
+    const updatedDate = event_date
+      ? toDate(event_date)
+      : oldEvent.eventDate;
+
+    const updatedStart = start_time
+      ? toTime(start_time)
+      : oldEvent.startTime;
+
+    const updatedEnd = end_time
+      ? toTime(end_time)
+      : oldEvent.endTime;
+
     const updatedMode = mode ?? oldEvent.mode;
 
-    if (
-      !updatedTitle ||
-      !updatedDate ||
-      !updatedStart ||
-      !updatedEnd
-    ) {
+    if (!updatedTitle) {
       return res.status(400).json({
-        message: "Required event fields are missing",
+        message: "Title is required",
       });
     }
 
-    if (updatedEnd <= updatedStart) {
+    if (
+      updatedEnd.getTime() <= updatedStart.getTime()
+    ) {
       return res.status(400).json({
         message: "End time must be after start time",
       });
@@ -234,41 +261,33 @@ const updateEvent = async (req, res) => {
       });
     }
 
-    const result = await pool.query(
-      `UPDATE events SET
-        title = $1,
-        event_date = $2,
-        start_time = $3,
-        end_time = $4,
-        image = $5,
-        description = $6,
-        venue = $7,
-        mode = $8,
-        updated_at = CURRENT_TIMESTAMP
-       WHERE id = $9
-       RETURNING *`,
-      [
-        updatedTitle,
-        updatedDate,
-        updatedStart,
-        updatedEnd,
+    const image = req.file
+      ? `/uploads/${req.file.filename}`
+      : oldEvent.image;
+
+    const updatedEvent = await prisma.event.update({
+      where: { id },
+      data: {
+        title: updatedTitle,
+        eventDate: updatedDate,
+        startTime: updatedStart,
+        endTime: updatedEnd,
         image,
-        description ?? oldEvent.description,
-        venue ?? oldEvent.venue,
-        updatedMode,
-        id,
-      ]
-    );
+        description: description ?? oldEvent.description,
+        venue: venue ?? oldEvent.venue,
+        mode: updatedMode,
+      },
+    });
 
     res.status(200).json({
       message: "Event updated successfully",
-      event: result.rows[0],
+      event: formatEvent(updatedEvent),
     });
 
   } catch (error) {
     console.error("Update Event Error:", error);
 
-    if (error.code === "23P01") {
+    if (isOverlapError(error)) {
       return res.status(409).json({
         message: "Another event already exists in this time slot",
       });
@@ -280,28 +299,30 @@ const updateEvent = async (req, res) => {
   }
 };
 
-
 // DELETE EVENT
 const deleteEvent = async (req, res) => {
   try {
-    const { id } = req.params;
+    const id = Number(req.params.id);
 
-    if (!/^\d+$/.test(id)) {
+    if (!Number.isInteger(id) || id <= 0) {
       return res.status(400).json({
         message: "Invalid event ID",
       });
     }
 
-    const result = await pool.query(
-      "DELETE FROM events WHERE id = $1 RETURNING *",
-      [id]
-    );
+    const existingEvent = await prisma.event.findUnique({
+      where: { id },
+    });
 
-    if (result.rows.length === 0) {
+    if (!existingEvent) {
       return res.status(404).json({
         message: "Event not found",
       });
     }
+
+    await prisma.event.delete({
+      where: { id },
+    });
 
     res.status(200).json({
       message: "Event deleted successfully",
@@ -315,7 +336,6 @@ const deleteEvent = async (req, res) => {
     });
   }
 };
-
 
 module.exports = {
   createEvent,

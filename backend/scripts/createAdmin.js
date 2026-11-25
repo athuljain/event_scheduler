@@ -1,7 +1,7 @@
 require("dotenv").config();
 
 const bcrypt = require("bcryptjs");
-const pool = require("../config/db");
+const prisma = require("../config/db");
 
 const createAdmin = async () => {
   try {
@@ -12,29 +12,30 @@ const createAdmin = async () => {
       throw new Error("Admin credentials are missing");
     }
 
-    const existingAdmin = await pool.query(
-      "SELECT id FROM admins WHERE email = $1",
-      [email]
-    );
+    const existingAdmin = await prisma.admin.findUnique({
+      where: { email },
+    });
 
-    if (existingAdmin.rows.length > 0) {
+    if (existingAdmin) {
       console.log("Admin already exists");
       return;
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    await pool.query(
-      `INSERT INTO admins (email, password)
-       VALUES ($1, $2)`,
-      [email, hashedPassword]
-    );
+    await prisma.admin.create({
+      data: {
+        email,
+        password: hashedPassword,
+      },
+    });
 
     console.log("Admin created successfully");
   } catch (error) {
-    console.error(error);
+    console.error("Failed to create admin:", error);
+    process.exitCode = 1;
   } finally {
-    await pool.end();
+    await prisma.$disconnect();
   }
 };
 

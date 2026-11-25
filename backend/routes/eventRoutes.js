@@ -10,7 +10,7 @@ const {
   deleteEvent,
 } = require("../controllers/eventController");
 
-const protect = require("../middleware/authMiddleware");
+const { protect } = require("../middleware/authMiddleware");
 const upload = require("../middleware/uploadMiddleware");
 
 // Public routes

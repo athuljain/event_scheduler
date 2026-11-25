@@ -1,51 +1,47 @@
+
 const jwt = require("jsonwebtoken");
-const pool = require("../config/db");
+const prisma = require("../config/db");
 
 const protect = async (req, res, next) => {
   try {
-    let token;
+    const authHeader = req.headers.authorization;
 
-    // Get token from Authorization header
-    if (
-      req.headers.authorization &&
-      req.headers.authorization.startsWith("Bearer ")
-    ) {
-      token = req.headers.authorization.split(" ")[1];
-    }
-
-    if (!token) {
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return res.status(401).json({
-        message: "Not authorized. No token provided",
+        message: "Not authorized. No token provided.",
       });
     }
 
-    // Verify token
-    const decoded = jwt.verify(
-      token,
-      process.env.JWT_SECRET
-    );
+    const token = authHeader.split(" ")[1];
 
-    // Check that admin still exists
-    const result = await pool.query(
-      "SELECT id, email FROM admins WHERE id = $1",
-      [decoded.id]
-    );
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    if (result.rows.length === 0) {
+    const admin = await prisma.admin.findUnique({
+      where: {
+        id: decoded.id,
+      },
+      select: {
+        id: true,
+        email: true,
+      },
+    });
+
+    if (!admin) {
       return res.status(401).json({
-        message: "Admin account not found",
+        message: "Admin not found",
       });
     }
 
-    req.admin = result.rows[0];
+    req.admin = admin;
 
     next();
-
   } catch (error) {
+    console.error("Authentication Error:", error.message);
+
     return res.status(401).json({
       message: "Invalid or expired token",
     });
   }
 };
 
-module.exports = protect;
+module.exports = { protect };
